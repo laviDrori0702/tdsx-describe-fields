@@ -8,11 +8,14 @@ drafting field descriptions. Requires the datasource's "API Access"
 capability to be enabled (Tableau Server 2025.1+ or Tableau Cloud).
 
 Prints column-level summary statistics to stdout, computed over the sampled
-rows only (VDS does not expose a full-population read).
+rows only (VDS does not expose a full-population read). With --out, the same
+summary is also written to disk (prefixed with the datasource's existing
+server-side description) so a later phase can read it without re-querying.
 """
 
 import argparse
 import sys
+from pathlib import Path
 
 from _shared import connect_to_server, find_datasource, get_server_env
 
@@ -94,28 +97,45 @@ def query_rows(server, luid: str, captions: list[str], row_limit: int) -> list[d
     return rows
 
 
-def print_summary(rows: list[dict], captions: list[str]) -> None:
-    """Print per-column summary stats (over the sample) to stdout.
+def build_summary(rows: list[dict], captions: list[str],
+                  existing_description: str | None = None) -> str:
+    """Build the per-column summary text (computed over the sample).
 
     Args:
         rows: The sampled rows, keyed by field caption.
         captions: Field captions, in display order.
+        existing_description: The datasource's current server-side description,
+            included verbatim at the top so a drafting phase can seed from it.
+
+    Returns:
+        The full summary as a single string.
     """
-    print("\n=== Column Summary (sample only) ===\n")
+    lines: list[str] = []
+
+    # The existing description is a drafting input, so it travels with the summary.
+    lines.append("=== Existing datasource description ===")
+    lines.append(existing_description.strip() if existing_description
+                 else "(none set on the server)")
+    lines.append("")
+
+    lines.append("=== Column Summary (sample only) ===")
+    lines.append("")
     for caption in captions:
         values = [row.get(caption) for row in rows if row.get(caption) is not None]
         unique = len(set(values))
         sample_str = ", ".join(str(v) for v in values[:5])
 
-        print(f"  {caption}")
-        print(f"    non-null: {len(values)}/{len(rows)}  |  unique: {unique}")
-        print(f"    sample values: {sample_str}")
+        lines.append(f"  {caption}")
+        lines.append(f"    non-null: {len(values)}/{len(rows)}  |  unique: {unique}")
+        lines.append(f"    sample values: {sample_str}")
 
         numeric = [v for v in values if isinstance(v, (int, float))]
         if numeric:
-            print(f"    min: {min(numeric)}  |  max: {max(numeric)}  |  "
-                 f"mean: {sum(numeric) / len(numeric):.4f}")
-        print()
+            lines.append(f"    min: {min(numeric)}  |  max: {max(numeric)}  |  "
+                         f"mean: {sum(numeric) / len(numeric):.4f}")
+        lines.append("")
+
+    return "\n".join(lines)
 
 
 def main() -> None:
@@ -127,6 +147,9 @@ def main() -> None:
     parser.add_argument("project_name", help="Project that hosts the datasource")
     parser.add_argument("--rows", type=int, default=500,
                         help="Number of rows to sample (default: 500)")
+    parser.add_argument("--out",
+                        help="Also write the summary to this path "
+                             "(e.g. vds_summary.txt) for later phases to read")
     args = parser.parse_args()
 
     server_url, token_name, token_secret, site_name, api_version = get_server_env()
@@ -144,7 +167,14 @@ def main() -> None:
         rows = query_rows(server, ds.id, captions, args.rows)
 
         print(f"Sampled {len(rows)} rows via VDS", file=sys.stderr)
-        print_summary(rows, captions)
+
+        summary = build_summary(rows, captions, ds.description)
+        print(summary)
+
+        if args.out:
+            out_path = Path(args.out).resolve()
+            out_path.write_text(summary, encoding="utf-8")
+            print(f"Summary written to {out_path}", file=sys.stderr)
     finally:
         if server is not None:
             server.auth.sign_out()

@@ -1,6 +1,6 @@
 ---
 name: tdsx-describe-fields
-description: Add human-readable field descriptions to a datasource published on Tableau Server -- downloads the .tdsx, samples the live data via VizQL Data Service to draft descriptions, injects them, and publishes back. Only use when the user explicitly attaches or references this skill.
+description: Add human-readable field descriptions to a datasource published on Tableau Server -- downloads the .tdsx, samples the live data via VizQL Data Service to draft descriptions, injects them, and publishes back. Optionally also drafts a datasource-level description (grain, coverage, aggregation rules, gotchas) for an AI agent that reads the datasource. Only use when the user explicitly attaches or references this skill.
 ---
 
 # TDSX Field Description Skill
@@ -10,7 +10,8 @@ Server**. The only input is a `datasource_name` and a `project_name` -- ask for 
 user hasn't given them. Local `.tdsx` files are not supported: the workflow samples the live
 datasource over VDS and publishes the result back, both of which need the server.
 
-Phase 3 (Publish) is **always offered as a user choice** at the end.
+Phase 3 (Publish) is **always offered as a user choice** at the end, and it opens with an
+**optional datasource-level description** add-on (opt-in, see Phase 3).
 
 ---
 
@@ -41,7 +42,8 @@ Requires environment variables (see Notes below).
 
 ```
 - [ ] Run extract_fields.py
-- [ ] Run sample_via_vds.py and read its stdout summary
+- [ ] Run extract_sql.py
+- [ ] Run sample_via_vds.py --out vds_summary.txt and read its stdout summary
 - [ ] Read field_metadata.json and the sampling summary
 - [ ] Fill in field_descriptions.json with initial descriptions
 - [ ] Present JSON to user and STOP
@@ -57,25 +59,44 @@ This creates two files in the current working directory:
 - `field_descriptions.json` -- `{"field_name": ""}` map to fill in
 - `field_metadata.json` -- rich metadata (caption, datatype, role, calculation formula)
 
-**Step 2: Sample data**
+**Step 2: Extract the source query**
+
+```bash
+python <skill_dir>/scripts/extract_sql.py <path_to_tdsx>
+```
+
+Writes `custom_sql.sql` to the CWD: every `<relation type='text'>` body, deduplicated
+(Tableau stores the same query once per connection, so a live + extract datasource
+holds it twice). If the datasource has no custom SQL, the script falls back to
+writing its physical table and join structure instead, fully commented out.
+
+This file is a drafting input for both field descriptions and -- if the user opts in --
+the datasource description in Phase 3.
+
+**Step 3: Sample data**
 
 Query the live datasource directly via VDS -- no extract download needed at all.
 
 ```bash
-python <skill_dir>/scripts/sample_via_vds.py "<datasource_name>" "<project_name>"
+python <skill_dir>/scripts/sample_via_vds.py "<datasource_name>" "<project_name>" --out vds_summary.txt
 ```
 
 Optional: `--rows 500` (default is 500). Requires the datasource's **API Access**
 capability enabled (Tableau Server 2025.1+ or Tableau Cloud). The script prints a
 column-level summary to stdout -- non-null counts, unique counts, sample values, and
-min/max for numeric columns -- computed over the sampled rows. Nothing is written to disk.
+min/max for numeric columns -- computed over the sampled rows.
+
+Always pass `--out vds_summary.txt`: it writes the same summary to disk, prefixed with
+the datasource's **existing server-side description**. Phase 3 reads that file, so the
+summary survives context compaction and no second VDS query is needed.
 
 If VDS fails (capability off, or an older server), say so and draft from
-`field_metadata.json` alone -- do not fall back to downloading the extract.
+`field_metadata.json` and `custom_sql.sql` alone -- do not fall back to downloading
+the extract.
 
-**Step 3: Draft descriptions**
+**Step 4: Draft descriptions**
 
-Read `field_metadata.json` to understand each field. Then use the sampling summary from Step 2 to see actual data values. Edit `field_descriptions.json`, filling in a concise description for every field based on:
+Read `field_metadata.json` to understand each field. Then use the sampling summary from Step 3 to see actual data values. Edit `field_descriptions.json`, filling in a concise description for every field based on:
 - The field name and caption (e.g., `Revenue_EUR` -> revenue in Euros)
 - The data type and role (measure vs dimension)
 - Calculation formulas (for calculated fields, describe what the formula computes)
@@ -83,7 +104,7 @@ Read `field_metadata.json` to understand each field. Then use the sampling summa
 
 Keep descriptions short (one sentence). These are initial drafts for the user to refine.
 
-**Step 4: Present and wait**
+**Step 5: Present and wait**
 
 Tell the user that `field_descriptions.json` is ready for review. Show the JSON contents.
 **STOP and wait for user approval before proceeding to Phase 2.**
@@ -130,9 +151,93 @@ Two output files are created next to the original `.tdsx`:
 
 ---
 
-## Phase 3 -- Publish to Server (always offered)
+## Phase 3 -- Datasource Description (optional) + Publish
 
-After Phase 2, **always ask the user**: "Would you like to publish the datasource to Tableau Server?"
+Phase 3 asks the user **two separate questions**, in this order.
+
+### Question 1 -- Datasource description (opt-in)
+
+Ask: *"Would you like to add a datasource-level description? It is written for the AI
+agent that answers questions inside the dashboards."*
+
+If the user declines, skip straight to Question 2.
+
+A datasource description is **server-side metadata only** -- there is no place for it
+in the `.tds`, so it can only be set by publishing. If the user wants a description but
+then declines to publish, say so plainly: the drafted file stays on disk unused.
+
+```
+- [ ] Read custom_sql.sql, vds_summary.txt, and the approved field_descriptions.json
+- [ ] Read CONTEXT.md / CLAUDE.md / docs/adr/ if they exist in the CWD
+- [ ] Write datasource_description.txt using the template below
+- [ ] Show it inline, take edits, STOP until approved
+```
+
+**Who reads this.** An AI agent embedded in the dashboards reads the datasource
+description *and* the field descriptions to answer user questions. So the datasource
+description must be **strictly non-overlapping** with the field descriptions: it carries
+only the cross-field truths that no single field's description can state. Never restate
+what a field description already says.
+
+**Drafting inputs**, in order of authority:
+
+1. `custom_sql.sql` -- source tables, joins, `WHERE` filters, `GROUP BY` grain.
+2. `vds_summary.txt` -- date min/max for coverage, unique counts for grain, plus the
+   existing server-side description at the top (**seed from it**: it holds jargon the
+   skill cannot invent, so preserve its terminology rather than replacing it).
+3. The user-approved `field_descriptions.json` -- inherits whatever jargon the user
+   settled on during Phase 1.
+4. `CONTEXT.md`, `CLAUDE.md`, `docs/adr/` **if present in the CWD** -- the jargon source
+   for the `Glossary:` line. Skip the section silently when none exist.
+5. SQL comments and CTE names -- a thin but always-available jargon source.
+
+**Format:** labeled lines, one `Label: value` per line. Soft budget ~1500 characters.
+
+| Line | Include |
+|---|---|
+| `Purpose:` | always |
+| `Grain:` -- what exactly one row represents | always |
+| `Coverage:` -- date range and freshness lag | always |
+| `Aggregation:` -- which measures are point-in-time stocks vs additive flows | always |
+| `Scope:` -- filters and exclusions baked into the SQL | always |
+| `Metrics:` -- canonical formulas the agent must not reinvent | when derivable |
+| `Glossary:` -- `term = meaning`, semicolon-separated | when a jargon source exists |
+| `Gotchas:` -- traps a correct-looking query falls into | when derivable |
+
+Example:
+
+```
+Purpose: Daily snapshots of B2B subscription contracts for lifecycle dashboards.
+Grain: One row per contract per norm_date.
+Coverage: 2025-01-01 to current date; usable max date is MAX(norm_date) - 2.
+Aggregation: num_contracts is a point-in-time stock -- do NOT sum across dates;
+  total_in and total_out are additive flows.
+Scope: Excludes cancelled subscriptions; contracts starting before 2024-01-01 are out of range.
+Metrics: total_in = new_business + upgrades_downgrades + in_trial + other_in.
+Glossary: norm_date = the date-spine day a snapshot belongs to; ROW = all countries
+  outside USA and India.
+Gotchas: end_date is inclusive -- a contract ending on day D still counts on D but
+  leaves the stock on D+1.
+```
+
+**Grounding rule.** `Grain`, `Aggregation` and `Scope` are *inferred* from the SQL, and
+inference can be wrong. Prefix any line **not directly derivable** from the inputs with
+`?? ` so the review shows the user exactly what to check:
+
+```
+?? Grain: One row per contract per norm_date.
+```
+
+`publish_datasource.py` **refuses to publish** (exit 3) while any `??` remains, so every
+marker must be resolved or removed during review. Never strip a marker yourself just to
+get the publish through -- take it to the user.
+
+Write the draft to `datasource_description.txt`, show it inline, and **STOP for approval**.
+The user may edit the file directly; re-read it after they say they have.
+
+### Question 2 -- Publish
+
+**Always ask**: "Would you like to publish the datasource to Tableau Server?"
 
 If the user declines, the workflow is done (local files are ready).
 
@@ -152,7 +257,18 @@ If the user accepts:
 python <skill_dir>/scripts/publish_datasource.py "<path_to_with_descriptions_tdsx>" "<datasource_name>" "<project_name>"
 ```
 
+If the user approved a datasource description, add `--description-file`:
+
+```bash
+python <skill_dir>/scripts/publish_datasource.py "<path_to_with_descriptions_tdsx>" "<datasource_name>" "<project_name>" --description-file datasource_description.txt
+```
+
 The script publishes the datasource as `Verified <datasource_name>` to the specified project.
+With `--description-file` it also re-reads the published datasource and warns if the server
+truncated the description (Tableau's cap is undocumented).
+
+**Exit code 3** means the description file still has `??` markers -- nothing was published.
+Resolve them with the user and re-run.
 
 **Step 2: Handle existing datasource**
 
@@ -162,6 +278,9 @@ Inform the user and ask for confirmation to overwrite. If approved, re-run with 
 ```bash
 python <skill_dir>/scripts/publish_datasource.py "<path_to_with_descriptions_tdsx>" "<datasource_name>" "<project_name>" --overwrite
 ```
+
+Keep `--description-file` on the retry if it was on the first attempt -- dropping it
+publishes with no description.
 
 **Step 3: Confirm**
 
@@ -192,6 +311,11 @@ Do not report the workflow as complete without this message.
 - Calculated fields include their formula in `field_metadata.json` to help write better descriptions.
 - Font styling is hardcoded: `fontcolor='#3c4043' fontname='Inter' fontsize='11'`.
 - The extract can't be skipped for publish, even when overwriting the same datasource in place: Tableau's Publish Data Source call is always a full-content replace, not a metadata patch, regardless of the `overwrite` flag. The only endpoint that updates without the extract (Update Data Source) can only touch owner/project/certification, never columns or descriptions.
+- The datasource-level description lives **only** on the server (`DatasourceItem.description`).
+  Unlike field descriptions there is no `<desc>` for it in the `.tds`, which is why it rides
+  along with the publish call instead of being injected in Phase 2.
+- Tableau stores custom SQL once per connection, so a live + extract datasource holds the
+  same query twice; `extract_sql.py` deduplicates identical bodies.
 - `sample_via_vds.py` reuses the same TSC sign-in session as `download_datasource.py` (via `find_datasource` in `_shared.py`) and calls the VizQL Data Service REST endpoints directly with `requests` (a transitive dependency of `tableauserverclient`, already installed) -- no new dependency, no pandas/pantab anywhere in the skill.
 
 ### Required environment variables
@@ -206,5 +330,5 @@ Do not report the workflow as complete without this message.
 
 ### Dependencies
 
-- `extract_fields.py` and `inject_descriptions.py` use only Python stdlib.
+- `extract_fields.py`, `extract_sql.py` and `inject_descriptions.py` use only Python stdlib.
 - `download_datasource.py`, `publish_datasource.py` and `sample_via_vds.py` require `tableauserverclient`.
