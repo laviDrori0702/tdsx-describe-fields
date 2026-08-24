@@ -133,6 +133,41 @@ def connect_to_server(server_url: str, token_name: str, token_secret: str,
     return server
 
 
+def find_datasource(server, datasource_name: str, project_name: str):
+    """Find a datasource on Tableau Server by name and project.
+
+    Args:
+        server: Authenticated TSC.Server instance.
+        datasource_name: Name of the datasource to find.
+        project_name: Project containing the datasource.
+
+    Returns:
+        The matching TSC.DatasourceItem.
+    """
+    matches = list(server.datasources.filter(
+        name=datasource_name, project_name=project_name
+    ))
+
+    if len(matches) == 0:
+        print(
+            f"Error: No datasource '{datasource_name}' found in project '{project_name}'.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if len(matches) > 1:
+        print(
+            f"Warning: {len(matches)} datasources named '{datasource_name}' "
+            f"in project '{project_name}'. Using the first match.",
+            file=sys.stderr,
+        )
+
+    ds = matches[0]
+    print(f"Found datasource: {ds.name} (ID: {ds.id}, project: {ds.project_name})",
+          file=sys.stderr)
+    return ds
+
+
 def get_server_env() -> tuple[str, str, str, str, str]:
     """Read all Tableau Server environment variables.
 
