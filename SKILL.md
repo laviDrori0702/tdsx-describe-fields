@@ -1,25 +1,20 @@
 ---
 name: tdsx-describe-fields
-description: Add human-readable field descriptions to Tableau .tdsx packaged datasource files. Supports downloading from Tableau Server, data sampling for smarter descriptions, and publishing back. Only use when the user explicitly attaches or references this skill.
+description: Add human-readable field descriptions to a datasource published on Tableau Server -- downloads the .tdsx, samples the live data via VizQL Data Service to draft descriptions, injects them, and publishes back. Only use when the user explicitly attaches or references this skill.
 ---
 
 # TDSX Field Description Skill
 
-Four-phase workflow for adding field descriptions to a Tableau `.tdsx` datasource file. Supports two input modes:
+Four-phase workflow for adding field descriptions to a datasource **published on Tableau
+Server**. The only input is a `datasource_name` and a `project_name` -- ask for both if the
+user hasn't given them. Local `.tdsx` files are not supported: the workflow samples the live
+datasource over VDS and publishes the result back, both of which need the server.
 
-- **Server mode** -- user provides a `datasource_name` and `project_name`. The agent downloads the `.tdsx` from Tableau Server.
-- **Local mode** -- user provides a path to a local `.tdsx` file. Phase 0 is skipped.
-
-Phase 3 (Publish) is **always offered as a user choice** at the end, regardless of the initial mode.
-
-## Determine mode
-
-If the user provided a **datasource name and project name**, use server mode (start at Phase 0).
-If the user provided a **file path ending in `.tdsx`**, use local mode (skip to Phase 1).
+Phase 3 (Publish) is **always offered as a user choice** at the end.
 
 ---
 
-## Phase 0 -- Download from Server (server mode only)
+## Phase 0 -- Download from Server
 
 ```
 - [ ] Run download_datasource.py --no-extract
@@ -46,8 +41,8 @@ Requires environment variables (see Notes below).
 
 ```
 - [ ] Run extract_fields.py
-- [ ] Run sample_via_vds.py (server mode) or sample_data.py (local mode)
-- [ ] Read field_metadata.json and data_sample.csv
+- [ ] Run sample_via_vds.py and read its stdout summary
+- [ ] Read field_metadata.json and the sampling summary
 - [ ] Fill in field_descriptions.json with initial descriptions
 - [ ] Present JSON to user and STOP
 ```
@@ -64,31 +59,27 @@ This creates two files in the current working directory:
 
 **Step 2: Sample data**
 
-- **Server mode (preferred when available):** query the live datasource directly via VDS -- no extract download needed at all.
+Query the live datasource directly via VDS -- no extract download needed at all.
 
-  ```bash
-  python <skill_dir>/scripts/sample_via_vds.py "<datasource_name>" "<project_name>"
-  ```
+```bash
+python <skill_dir>/scripts/sample_via_vds.py "<datasource_name>" "<project_name>"
+```
 
-  Optional: `--rows 500` (default is 500). Requires the datasource's **API Access** capability enabled (Tableau Server 2025.1+ or Tableau Cloud). If this fails (capability off, or an older server), fall back to local-mode sampling below using the Phase 0 download re-run with the extract included.
+Optional: `--rows 500` (default is 500). Requires the datasource's **API Access**
+capability enabled (Tableau Server 2025.1+ or Tableau Cloud). The script prints a
+column-level summary to stdout -- non-null counts, unique counts, sample values, and
+min/max for numeric columns -- computed over the sampled rows. Nothing is written to disk.
 
-- **Local mode (or VDS unavailable):** sample the `.tdsx`'s embedded extract directly.
-
-  ```bash
-  python <skill_dir>/scripts/sample_data.py <path_to_tdsx>
-  ```
-
-  Optional: `--rows 500` (default is 500). Requires the extract to be present in the file -- won't work on a `--no-extract` download. If the `.tdsx` has no `.hyper` extract inside (e.g. a live connection), this step will fail; in that case, skip it and rely on metadata only for drafting descriptions.
-
-Either path creates `data_sample.csv` in the current working directory and prints column-level summary statistics to stdout.
+If VDS fails (capability off, or an older server), say so and draft from
+`field_metadata.json` alone -- do not fall back to downloading the extract.
 
 **Step 3: Draft descriptions**
 
-Read `field_metadata.json` to understand each field. Then read `data_sample.csv` (and the stdout summary) to see actual data values. Edit `field_descriptions.json`, filling in a concise description for every field based on:
+Read `field_metadata.json` to understand each field. Then use the sampling summary from Step 2 to see actual data values. Edit `field_descriptions.json`, filling in a concise description for every field based on:
 - The field name and caption (e.g., `Revenue_EUR` -> revenue in Euros)
 - The data type and role (measure vs dimension)
 - Calculation formulas (for calculated fields, describe what the formula computes)
-- Actual data values from the sample (e.g., seeing country codes helps describe a country dimension)
+- Actual data values from the sampling summary (e.g., seeing country codes helps describe a country dimension)
 
 Keep descriptions short (one sentence). These are initial drafts for the user to refine.
 
@@ -104,12 +95,12 @@ Tell the user that `field_descriptions.json` is ready for review. Show the JSON 
 Only proceed after the user approves (they may have edited the JSON).
 
 ```
-- [ ] Re-run download_datasource.py WITHOUT --no-extract (server mode only)
+- [ ] Re-run download_datasource.py WITHOUT --no-extract
 - [ ] Run inject_descriptions.py
 - [ ] Confirm outputs created
 ```
 
-**Step 0: Re-download with the extract (server mode only)**
+**Step 0: Re-download with the extract**
 
 The Phase 0 download skipped the `.hyper` extract for speed. Publishing (Phase 3) always uploads a complete package, so re-run the same command without `--no-extract` now, before repackaging:
 
@@ -117,7 +108,7 @@ The Phase 0 download skipped the `.hyper` extract for speed. Publishing (Phase 3
 python <skill_dir>/scripts/download_datasource.py "<datasource_name>" "<project_name>"
 ```
 
-This overwrites `<path_to_tdsx>` in place with the full package (data included). Skip this step entirely in local mode -- the user's file already has whatever it has.
+This overwrites `<path_to_tdsx>` in place with the full package (data included).
 
 **Step 1: Inject**
 
@@ -148,18 +139,14 @@ If the user declines, the workflow is done (local files are ready).
 If the user accepts:
 
 ```
-- [ ] Collect datasource_name and project_name (if not already known from Phase 0)
 - [ ] Run publish_datasource.py
 - [ ] Handle overwrite prompt if needed
 - [ ] Confirm publication
 ```
 
-**Step 1: Collect info**
+**Step 1: Publish**
 
-If Phase 0 was used, `datasource_name` and `project_name` are already known.
-If the user started in local mode, ask them for the `datasource_name` and `project_name` now.
-
-**Step 2: Publish**
+`datasource_name` and `project_name` are already known from Phase 0.
 
 ```bash
 python <skill_dir>/scripts/publish_datasource.py "<path_to_with_descriptions_tdsx>" "<datasource_name>" "<project_name>"
@@ -167,7 +154,7 @@ python <skill_dir>/scripts/publish_datasource.py "<path_to_with_descriptions_tds
 
 The script publishes the datasource as `Verified <datasource_name>` to the specified project.
 
-**Step 3: Handle existing datasource**
+**Step 2: Handle existing datasource**
 
 If exit code is **2**, a datasource named `Verified <datasource_name>` already exists.
 Inform the user and ask for confirmation to overwrite. If approved, re-run with `--overwrite`:
@@ -176,11 +163,11 @@ Inform the user and ask for confirmation to overwrite. If approved, re-run with 
 python <skill_dir>/scripts/publish_datasource.py "<path_to_with_descriptions_tdsx>" "<datasource_name>" "<project_name>" --overwrite
 ```
 
-**Step 4: Confirm**
+**Step 3: Confirm**
 
 Print the published datasource name and ID as confirmation.
 
-**Step 5: Tell the user to re-embed the database credentials**
+**Step 4: Tell the user to re-embed the database credentials**
 
 The published datasource does **not** carry the database password -- Tableau never
 returns the stored credential on download, so the repackaged `.tdsx` uploads a
@@ -204,11 +191,10 @@ Do not report the workflow as complete without this message.
 - Parameters are automatically excluded from extraction.
 - Calculated fields include their formula in `field_metadata.json` to help write better descriptions.
 - Font styling is hardcoded: `fontcolor='#3c4043' fontname='Inter' fontsize='11'`.
-- `data_sample.csv` is a working file; it can be deleted after the skill completes.
 - The extract can't be skipped for publish, even when overwriting the same datasource in place: Tableau's Publish Data Source call is always a full-content replace, not a metadata patch, regardless of the `overwrite` flag. The only endpoint that updates without the extract (Update Data Source) can only touch owner/project/certification, never columns or descriptions.
-- `sample_via_vds.py` reuses the same TSC sign-in session as `download_datasource.py` (via `find_datasource` in `_shared.py`) and calls the VizQL Data Service REST endpoints directly with `requests` (a transitive dependency of `tableauserverclient`, already installed) -- no new dependency, no pandas/pantab needed for this path.
+- `sample_via_vds.py` reuses the same TSC sign-in session as `download_datasource.py` (via `find_datasource` in `_shared.py`) and calls the VizQL Data Service REST endpoints directly with `requests` (a transitive dependency of `tableauserverclient`, already installed) -- no new dependency, no pandas/pantab anywhere in the skill.
 
-### Required environment variables (for server interactions)
+### Required environment variables
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
@@ -221,5 +207,4 @@ Do not report the workflow as complete without this message.
 ### Dependencies
 
 - `extract_fields.py` and `inject_descriptions.py` use only Python stdlib.
-- `download_datasource.py` and `publish_datasource.py` require `tableauserverclient`.
-- `sample_data.py` requires `pandas` and `pantab`.
+- `download_datasource.py`, `publish_datasource.py` and `sample_via_vds.py` require `tableauserverclient`.

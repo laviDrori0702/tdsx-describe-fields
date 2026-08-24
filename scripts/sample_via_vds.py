@@ -7,17 +7,12 @@ Tableau Server directly, so no .hyper extract ever needs to be downloaded for
 drafting field descriptions. Requires the datasource's "API Access"
 capability to be enabled (Tableau Server 2025.1+ or Tableau Cloud).
 
-Outputs (in current working directory):
-  - data_sample.csv  : sample of rows pulled via VDS query-datasource
-
-Also prints column-level summary statistics to stdout, computed over the
-sample only (VDS does not expose a full-population read).
+Prints column-level summary statistics to stdout, computed over the sampled
+rows only (VDS does not expose a full-population read).
 """
 
 import argparse
-import csv
 import sys
-from pathlib import Path
 
 from _shared import connect_to_server, find_datasource, get_server_env
 
@@ -148,13 +143,7 @@ def main() -> None:
 
         rows = query_rows(server, ds.id, captions, args.rows)
 
-        csv_path = Path.cwd() / "data_sample.csv"
-        with open(csv_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=captions)
-            writer.writeheader()
-            writer.writerows(rows)
-
-        print(f"Sampled {len(rows)} rows -> {csv_path}", file=sys.stderr)
+        print(f"Sampled {len(rows)} rows via VDS", file=sys.stderr)
         print_summary(rows, captions)
     finally:
         if server is not None:
