@@ -13,6 +13,15 @@ It can optionally also draft a **datasource-level description** (see
 of grain, coverage, aggregation rules and gotchas, aimed at an AI agent reading the
 datasource to answer questions about a dashboard.
 
+## Requirements
+
+Python 3.10+ (the scripts use `str | None` annotations) and, for the four scripts that
+talk to the server, `tableauserverclient`:
+
+```bash
+pip install tableauserverclient
+```
+
 ## Install
 
 Clone into your Claude Code skills directory:
@@ -75,13 +84,15 @@ Aggregation: num_contracts is a point-in-time stock -- do NOT sum across dates;
   total_in and total_out are additive flows.
 Scope: Excludes cancelled subscriptions; contracts before 2024-01-01 are out of range.
 Metrics: total_in = new_business + upgrades_downgrades + in_trial + other_in.
+Glossary: norm_date = the date-spine day a snapshot belongs to; ROW = all countries outside USA and India.
 Gotchas: end_date is inclusive -- a contract ending on day D still counts on D.
 ```
 
 It's drafted from the source query (`custom_sql.sql`), the data sample
 (`vds_summary.txt`), your approved field descriptions, the datasource's existing
 server-side description, and — if they happen to exist in the working directory — repo
-docs like `CONTEXT.md` or `docs/adr/` as a jargon source.
+docs like `CONTEXT.md` or `docs/adr/` as a jargon source for the `Glossary:` line.
+The whole thing targets ~1500 characters.
 
 You review and edit it exactly like the field descriptions; nothing publishes until you
 approve. Lines the agent *inferred* rather than read are prefixed `?? ` so you know what
@@ -100,7 +111,7 @@ and warns if the server truncated what it sent.
 | `download_datasource.py <name> <project> [--output-dir DIR] [--no-extract]` | Download a `.tdsx` from Server | `tableauserverclient` |
 | `extract_fields.py <tdsx>` | Emit `field_descriptions.json` + `field_metadata.json` | stdlib |
 | `extract_sql.py <tdsx> [--out FILE]` | Dump the custom SQL (deduplicated), or the table/join structure | stdlib |
-| `sample_via_vds.py <name> <project> [--rows N] [--out FILE]` | Sample the live datasource via VDS, print a column summary | `tableauserverclient` |
+| `sample_via_vds.py <name> <project> [--rows N] [--out FILE]` | Sample the live datasource via VDS (default 500 rows), print a column summary | `tableauserverclient` |
 | `inject_descriptions.py <tdsx> [--descriptions JSON]` | Write descriptions, repackage | stdlib |
 | `publish_datasource.py <tdsx> <name> <project> [--overwrite] [--description-file FILE]` | Publish to Server (exit `2` = name already exists, exit `3` = unreviewed `??` markers) | `tableauserverclient` |
 
